@@ -51,6 +51,7 @@ double calculate_frame();
 void draw_block(int x, int y, uintattr_t color);
 void create_new_active_piece();
 bool move_active_piece(direc_t d);
+void settle_active_piece();
 void sigint_handler(int sig);
 void quit(const char *exit_msg);
 
@@ -117,7 +118,9 @@ double calculate_frame() {
 	
 	// Calculate new positions of active piece
 	// TODO
-	move_active_piece(DOWN); // TODO: actually use return
+	if (move_active_piece(DOWN) == false) {
+		settle_active_piece();
+	}
 
 	// Draw the outside frame of the board
 	for (int i = 0; i < BOARD_WIDTH + 2; i++) {
@@ -210,6 +213,15 @@ bool move_active_piece(direc_t d) {
 		active_piece.blocks[i] = new_blocks[i];
 	}
 	return true;
+}
+
+void settle_active_piece() {
+	// Write the piece's color to its board position
+	for (uint8_t i = 0; i < 4; i++) {
+		board[active_piece.blocks[i].x][active_piece.blocks[i].y] = active_piece.color;
+	}
+	
+	create_new_active_piece();
 }
 
 void sigint_handler(int sig) {
