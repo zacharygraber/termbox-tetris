@@ -17,27 +17,40 @@
 #include <stdbool.h>
 
 // Widths are effectively doubled, since a single "cell" is too skinny to be square
-#define BOARD_WIDTH 10 
-#define BOARD_HEIGHT 20
+#define BOARD_WIDTH 10 // MAX OF 255 
+#define BOARD_HEIGHT 20 // MAX OF 255
 #define MIN_WIDTH (BOARD_WIDTH + 2)*2
 #define MIN_HEIGHT (BOARD_HEIGHT + 2)
 
-// A block is a "pixel" in the game board
-typedef struct block {
-	bool occupied;
-	uintattr_t color;
+// A game piece (a tetromino) is made of 4 blocks
+typedef struct block_t {
+	uint8_t x;
+	uint8_t y;
 } block_t;
 
+typedef struct piece_t {
+	block_t blocks[4];
+	uintattr_t color;
+} piece_t;
+
+typedef enum direc_t {
+	LEFT,
+	RIGHT,
+	DOWN // pieces can never move up
+} direc_t;
 
 // Globals ///////////
 static double frame_time = 1000.0; // (in ms) start at 1sec between updates
-static block_t board[BOARD_WIDTH][BOARD_HEIGHT];
+static uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
+static piece_t active_piece;
 static struct tb_event event = {0};
 //////////////////////
 
 void initialize();
 double calculate_frame();
 void draw_block(int x, int y, uintattr_t color);
+void create_new_active_piece();
+bool move_active_piece(direc_t d);
 void sigint_handler(int sig);
 void quit(const char *exit_msg);
 
@@ -67,7 +80,7 @@ int main(void) {
 		// Handle input: TODO
 		tb_peek_event(&event, 10);
 		if (event.type == TB_EVENT_KEY) {
-			if (event.key == TB_KEY_CTRL_C || event.key == TB_KEY_ESC) {
+			if (event.key == TB_KEY_CTRL_C || event.key == TB_KEY_ESC || event.ch == 'q') {
 				quit("keyboard quit-out");
 			}
 		}
@@ -85,12 +98,13 @@ void initialize() {
 	// Register sigint handler to gracefully shut down
 	signal(SIGINT, sigint_handler);
 
-	for (int i = 0; i < BOARD_WIDTH; i++) {
-		for (int j = 0; j < BOARD_HEIGHT; j++) {
-			board[i][j].occupied = false;
-			board[i][j].color = TB_BLACK;
+	for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
+		for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
+			board[i][j] = TB_BLACK;
 		}
 	}
+
+	create_new_active_piece();
 
 	return;
 }
@@ -101,6 +115,10 @@ void initialize() {
 double calculate_frame() {
 	clock_t start = clock();
 	
+	// Calculate new positions of active piece
+	// TODO
+	move_active_piece(DOWN); // TODO: actually use return
+
 	// Draw the outside frame of the board
 	for (int i = 0; i < BOARD_WIDTH + 2; i++) {
 		draw_block(i, 0, TB_WHITE); // Top row
@@ -112,11 +130,16 @@ double calculate_frame() {
 	}
 
 	// Draw the board
-	for (int i = 0; i < BOARD_WIDTH; i++) {
-		for (int j = 0; j < BOARD_HEIGHT; j++) {
-			draw_block(i+1, j+1, board[i][j].color); // +1 to account for frame
+	for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
+		for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
+			draw_block(i+1, j+1, board[i][j]); // +1 to account for frame
 		}
 	}
+
+	// Draw active piece
+    for (uint8_t i = 0; i < 4; i++) {
+        draw_block(active_piece.blocks[i].x+1, active_piece.blocks[i].y+1, active_piece.color);
+    }
 
 	clock_t end = clock();
 	return ((double) (end - start) * 1000.0) / CLOCKS_PER_SEC;
@@ -126,6 +149,67 @@ double calculate_frame() {
 void draw_block(int x, int y, uintattr_t color) {
 	// x coordinate is doubled since each "block" is 2 chars wide
 	tb_print(2 * x, y, color, 0, "██");
+}
+
+void create_new_active_piece() {
+	// TODO: implement actual tetrominos
+	active_piece.color = TB_CYAN;
+	active_piece.blocks[0].x = 3;
+	active_piece.blocks[0].y = 0;
+	active_piece.blocks[1].x = 4;
+	active_piece.blocks[1].y = 0;
+	active_piece.blocks[2].x = 5;
+	active_piece.blocks[2].y = 0;
+	active_piece.blocks[3].x = 6;
+	active_piece.blocks[3].y = 0;
+}
+
+/* Moves the active piece in the direction specified
+ * returns true if the piece is still in play after the move
+ * returns false if moving the piece would "settle" it on the board
+ */
+bool move_active_piece(direc_t d) {
+	block_t new_blocks[4];
+	int new_x=0, new_y=0;
+
+	// Check for each block in the piece if the new positions are valid
+	for (uint8_t i = 0; i < 4; i++) {
+		switch (d) {
+			case LEFT:
+				new_x = active_piece.blocks[i].x - 1;
+                new_y = active_piece.blocks[i].y; // y doesn't change
+
+                // Make sure moving left wouldn't put us through the left wall or in an already occupied space
+                if (new_x < 0 || board[new_x][new_y] != TB_BLACK) {
+                    return true; // This is a "valid" move, but the piece doesn't change positions
+                }
+				break;
+
+			case RIGHT:
+				new_x = active_piece.blocks[i].x + 1;
+                new_y = active_piece.blocks[i].y; // y doesn't change
+                if (new_x >= BOARD_WIDTH || board[new_x][new_y] != TB_BLACK) {
+                    return true; // This is a "valid" move, but the piece doesn't change positions
+                }
+				break;
+
+			case DOWN:
+				new_x = active_piece.blocks[i].x; // x doesn't change
+                new_y = active_piece.blocks[i].y + 1;
+				if (new_y >= BOARD_HEIGHT || board[new_x][new_y] != TB_BLACK) {
+					return false; // Piece hit the bottom of the board or another "settled" piece
+				}
+				break;
+		}
+		new_blocks[i].x = new_x;
+    	new_blocks[i].y = new_y;
+	}
+
+	// All guard clauses passed: move to new positions
+	for (uint8_t i = 0; i < 4; i++) {
+		active_piece.blocks[i] = new_blocks[i];
+	}
+	return true;
 }
 
 void sigint_handler(int sig) {
