@@ -14,19 +14,30 @@
 #include <unistd.h>
 #include <signal.h>
 #include <math.h>
+#include <stdbool.h>
 
-// Tetris game constants
-#define BOARD_WIDTH 10
+// Widths are effectively doubled, since a single "cell" is too skinny to be square
+#define BOARD_WIDTH 10 
 #define BOARD_HEIGHT 20
-#define MIN_WIDTH (BOARD_WIDTH + 2)
+#define MIN_WIDTH (BOARD_WIDTH + 2)*2
 #define MIN_HEIGHT (BOARD_HEIGHT + 2)
 
-// Globals
-static double frame_time = 1000.0; // (in ms) start at 1sec between updates
+// A block is a "pixel" in the game board
+typedef struct block {
+	bool occupied;
+	uintattr_t color;
+} block_t;
 
-// Function signatures
+
+// Globals ///////////
+static double frame_time = 1000.0; // (in ms) start at 1sec between updates
+static block_t board[BOARD_WIDTH][BOARD_HEIGHT];
+static struct tb_event event = {0};
+//////////////////////
+
 void initialize();
 double calculate_frame();
+void draw_block(int x, int y, uintattr_t color);
 void sigint_handler(int sig);
 void quit(const char *exit_msg);
 
@@ -52,6 +63,14 @@ int main(void) {
 			sleep_ts.tv_nsec = (long) (fmod(remaining_frame_time_ms, 1000.0) * 1000000);
 			nanosleep(&sleep_ts, &sleep_ts);
 		}
+
+		// Handle input: TODO
+		tb_peek_event(&event, 10);
+		if (event.type == TB_EVENT_KEY) {
+			if (event.key == TB_KEY_CTRL_C || event.key == TB_KEY_ESC) {
+				quit("keyboard quit-out");
+			}
+		}
 	}
 }
 
@@ -63,8 +82,16 @@ void initialize() {
 		quit("Window dimensions are too small!");
 	}
 
-	// Register sigint handler to gracefully shut down on Ctrl+C
+	// Register sigint handler to gracefully shut down
 	signal(SIGINT, sigint_handler);
+
+	for (int i = 0; i < BOARD_WIDTH; i++) {
+		for (int j = 0; j < BOARD_HEIGHT; j++) {
+			board[i][j].occupied = false;
+			board[i][j].color = TB_BLACK;
+		}
+	}
+
 	return;
 }
 
@@ -72,27 +99,33 @@ void initialize() {
  * Returns the time taken to calculate frame in ms
  */ 
 double calculate_frame() {
-	static int counter = 0; // TODO: REMOVE ME
 	clock_t start = clock();
 	
 	// Draw the outside frame of the board
 	for (int i = 0; i < BOARD_WIDTH + 2; i++) {
-		// Top row
-		tb_print(i, 0, TB_WHITE, 0, "█");
-		// Bottom row
-		tb_print(i, BOARD_HEIGHT+1, TB_WHITE, 0, "█");
+		draw_block(i, 0, TB_WHITE); // Top row
+		draw_block(i, BOARD_HEIGHT+1, TB_WHITE); // Bottom row
 	}
 	for (int i = 1; i <= BOARD_HEIGHT; i++) {
-		// Left side
-		tb_print(0, i, TB_WHITE, 0, "█");
-		// Right side
-		tb_print(BOARD_WIDTH+1, i, TB_WHITE, 0, "█");
+		draw_block(0, i, TB_WHITE); // left
+		draw_block(BOARD_WIDTH+1, i, TB_WHITE); // right
 	}
 
-	tb_printf(2, 2, TB_WHITE, TB_DEFAULT, "%d", counter++); // TODO: REMOVE ME
+	// Draw the board
+	for (int i = 0; i < BOARD_WIDTH; i++) {
+		for (int j = 0; j < BOARD_HEIGHT; j++) {
+			draw_block(i+1, j+1, board[i][j].color); // +1 to account for frame
+		}
+	}
 
 	clock_t end = clock();
 	return ((double) (end - start) * 1000.0) / CLOCKS_PER_SEC;
+}
+
+/* draws a square(ish) block of `color` at x,y in GAME GRID COORDINATES */
+void draw_block(int x, int y, uintattr_t color) {
+	// x coordinate is doubled since each "block" is 2 chars wide
+	tb_print(2 * x, y, color, 0, "██");
 }
 
 void sigint_handler(int sig) {
