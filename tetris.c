@@ -42,18 +42,24 @@ typedef enum direc_t {
 
 // Globals ///////////
 static double drop_speed = 1000.0; // (in ms) start by moving piece down every second
+//static double input_delay = 10.0; // (in ms)
 static uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
 static piece_t active_piece = {0};
-static struct tb_event event = {0};
 static pthread_mutex_t board_mutex, active_piece_mutex;
-static pthread_t drop_piece_pt;
+static pthread_t drop_piece_pt, event_handler_pt;
 
-// Set to true to signal for pthreads handling keyboard input and game progression to exit
+// Set to true to signal for pthread handling game progression to exit
 static bool STOP_GAME_LOOP = false;
+
+// Set to true to signal all pthreads to finish up and exit
+static bool QUIT_GAME = false;
 //////////////////////
 
 void initialize();
+void stop_game();
+void resume_game();
 void *drop_piece_pthread_routine(void *args);
+void *event_handler_pthread_routine(void *args);
 void render();
 void draw_block(int x, int y, uintattr_t color);
 void create_new_active_piece();
@@ -65,22 +71,8 @@ void quit(int status, const char *exit_msg);
 int main(void) {
 	tb_init();
 	initialize();
-	
-	/* The main loop of the game calls `calculate_frame` which performs the
-	 * logic for the next frame of the game. If that call took less than `frame_time`,
-	 * it waits for the remainder of that time (so that the entire process takes *roughly* frame_time).
-	 * TODO: UPDATE THIS
-	 */
-	while (true) {
-		// Handle input: TODO
-		tb_peek_event(&event, 10);
-		if (event.type == TB_EVENT_KEY) {
-			if (event.key == TB_KEY_CTRL_C || event.key == TB_KEY_ESC || event.ch == 'q') {
-				quit(EXIT_SUCCESS, "keyboard quit-out");
-			}
-		}
-		sleep(1);
-	}
+	pthread_join(event_handler_pt, NULL);
+	quit(EXIT_SUCCESS, "Game over.");
 }
 
 /* initializes the resources and threads needed to run the game
@@ -108,11 +100,34 @@ void initialize() {
 
 	create_new_active_piece();
 
-	// Spawn pthreads for dropping piece and (TODO: keyboard input/controls)
+	// Spawn pthreads for dropping piece and main event handler
 	if (pthread_create(&drop_piece_pt, NULL, drop_piece_pthread_routine, NULL)) {
 		quit(EXIT_FAILURE, "Failed to create pthread worker");
 	}
+	if (pthread_create(&event_handler_pt, NULL, event_handler_pthread_routine, NULL)) {
+		quit(EXIT_FAILURE, "Failed to create pthread for main loop");
+	}
 
+	// Make a call to render() the first frame
+	render();
+	return;
+}
+
+void stop_game() {
+	if (STOP_GAME_LOOP == true) return;
+
+	STOP_GAME_LOOP = true;
+	pthread_join(drop_piece_pt, NULL);
+	return;
+}
+
+void resume_game() {
+	if (STOP_GAME_LOOP == false) return;
+
+	STOP_GAME_LOOP = false;
+    if (pthread_create(&drop_piece_pt, NULL, drop_piece_pthread_routine, NULL)) {
+        quit(EXIT_FAILURE, "Failed to create pthread worker");
+    }
 	return;
 }
 
@@ -125,7 +140,7 @@ void *drop_piece_pthread_routine(void *args) {
 	double remaining_wait_time_ms = drop_speed, loop_time_taken_ms = 0; // wait the full time in the first loop
     struct timespec sleep_ts;
 	clock_t start, stop;
-	while (!STOP_GAME_LOOP) {
+	while (!(STOP_GAME_LOOP || QUIT_GAME)) {
         // Sleep if necessary
         if (remaining_wait_time_ms > 0) {
             sleep_ts.tv_sec = ((long) remaining_wait_time_ms) / 1000; // cast is safe to truncate since guaranteed > 0
@@ -134,13 +149,51 @@ void *drop_piece_pthread_routine(void *args) {
         }
 		
 		start = clock();
-		// Move piece down and re-render to display change
+		// Move piece down and re-render to display change (rendering handled in move)
     	move_active_piece(DOWN);
-    	render();
 		stop = clock();
 
 		loop_time_taken_ms = ((double) (stop - start) * 1000.0) / CLOCKS_PER_SEC;
 		remaining_wait_time_ms = drop_speed - loop_time_taken_ms;
+	}
+	pthread_exit(NULL);
+}
+
+/* Routine for a pthread to execute. As long as this pthread is alive, its loop will
+ * continually poll termbox for events (including keyboard input) and handle them appropriately.
+ * This could be considered the main loop of the game, and is intended to stay alive as
+ * long as the program does.
+ * 
+ * Set QUIT_GAME to true to signal for this routine to exit
+ */
+void *event_handler_pthread_routine(void *args) {
+	struct tb_event event = {0};
+	while (!QUIT_GAME) {
+		// Handle keyboard input
+        tb_poll_event(&event);
+        if (event.type == TB_EVENT_KEY) {
+			switch (event.key) {
+				case TB_KEY_CTRL_C:
+				case TB_KEY_ESC:
+					pthread_exit(NULL);
+					break;
+				case TB_KEY_ARROW_LEFT:
+					move_active_piece(LEFT);
+					break;
+				case TB_KEY_ARROW_RIGHT:
+					move_active_piece(RIGHT);
+					break;
+				case TB_KEY_ARROW_DOWN:
+					move_active_piece(DOWN);
+					break;
+			}
+			switch (event.ch) {
+				case 'q':
+				case 'Q':
+					pthread_exit(NULL);
+					break;
+			}
+        }
 	}
 	pthread_exit(NULL);
 }
@@ -202,6 +255,8 @@ void create_new_active_piece() {
 	active_piece.blocks[3].y = 0;
 
 	pthread_mutex_unlock(&active_piece_mutex);
+
+	render();
 }
 
 /* Moves the active piece in the direction specified
@@ -246,7 +301,7 @@ void move_active_piece(direc_t d) {
 				if (new_y >= BOARD_HEIGHT || board[new_x][new_y] != TB_BLACK) {
 					pthread_mutex_unlock(&board_mutex);
                     pthread_mutex_unlock(&active_piece_mutex);
-					settle_active_piece();
+					settle_active_piece(); // Render is handled by this function call
 					return; // Piece hit the bottom of the board or another "settled" piece
 				}
 				break;
@@ -261,6 +316,7 @@ void move_active_piece(direc_t d) {
 		active_piece.blocks[i] = new_blocks[i];
 	}
 	pthread_mutex_unlock(&active_piece_mutex);
+	render();
 	return;
 }
 
@@ -277,6 +333,7 @@ void settle_active_piece() {
 	pthread_mutex_unlock(&active_piece_mutex);
     pthread_mutex_unlock(&board_mutex);
 	
+	// Render is handled by this call
 	create_new_active_piece();
 }
 
@@ -296,8 +353,9 @@ void quit(int status, const char *exit_msg) {
     pthread_mutex_destroy(&active_piece_mutex);
 
 	// Signal for pthreads to exit, then wait for them
-	STOP_GAME_LOOP = true;
+	QUIT_GAME = true;
 	pthread_join(drop_piece_pt, NULL);
+	pthread_join(event_handler_pt, NULL);
 
 	tb_shutdown();
 	fprintf((status == EXIT_SUCCESS) ? stdout : stderr, "Tetris exited: %s\n", exit_msg);
