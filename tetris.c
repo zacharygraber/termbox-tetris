@@ -40,28 +40,32 @@ typedef enum direc_t {
 	DOWN // pieces can never move up
 } direc_t;
 
+typedef enum game_state_t {
+	PLAY,
+	PAUSE,
+	GAME_OVER,
+	QUIT
+} game_state_t;
+
 // Globals ///////////
 static double drop_speed = 1000.0; // (in ms) start by moving piece down every second
-//static double input_delay = 10.0; // (in ms)
 static uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
 static piece_t active_piece = {0};
 static pthread_mutex_t board_mutex, active_piece_mutex;
 static pthread_t drop_piece_pt, event_handler_pt;
-
-// Set to true to signal for pthread handling game progression to exit
-static bool STOP_GAME_LOOP = false;
-
-// Set to true to signal all pthreads to finish up and exit
-static bool QUIT_GAME = false;
+static game_state_t GAME_STATE = PAUSE;
 //////////////////////
 
 void initialize();
-void stop_game();
+void pause_game();
 void resume_game();
+void game_over();
+void setup_new_game();
 void *drop_piece_pthread_routine(void *args);
 void *event_handler_pthread_routine(void *args);
 void render();
 void draw_block(int x, int y, uintattr_t color);
+void show_321_countdown();
 void create_new_active_piece();
 void move_active_piece(direc_t d);
 void settle_active_piece();
@@ -86,49 +90,71 @@ void initialize() {
 	// Register sigint handler to gracefully shut down
 	signal(SIGINT, sigint_handler);
 
-	// Initialize the board to all black
-	for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
-		for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
-			board[i][j] = TB_BLACK;
-		}
-	}
 
 	// Create mutexes for board and active piece
 	if (pthread_mutex_init(&board_mutex, NULL) || pthread_mutex_init(&active_piece_mutex, NULL)) {
 		quit(EXIT_FAILURE, "Couldn't initialize mutex");
 	}
 
-	create_new_active_piece();
 
-	// Spawn pthreads for dropping piece and main event handler
-	if (pthread_create(&drop_piece_pt, NULL, drop_piece_pthread_routine, NULL)) {
-		quit(EXIT_FAILURE, "Failed to create pthread worker");
-	}
+	// Spawn pthread for main event handler
 	if (pthread_create(&event_handler_pt, NULL, event_handler_pthread_routine, NULL)) {
 		quit(EXIT_FAILURE, "Failed to create pthread for main loop");
 	}
 
+	setup_new_game();
+
 	// Make a call to render() the first frame
 	render();
+
+	resume_game();
 	return;
 }
 
-void stop_game() {
-	if (STOP_GAME_LOOP == true) return;
+void pause_game() {
+	if (GAME_STATE == PAUSE) return;
 
-	STOP_GAME_LOOP = true;
+	GAME_STATE = PAUSE;
 	pthread_join(drop_piece_pt, NULL);
 	return;
 }
 
 void resume_game() {
-	if (STOP_GAME_LOOP == false) return;
+	if (GAME_STATE == PLAY) return;
 
-	STOP_GAME_LOOP = false;
+	show_321_countdown();
+	render();
+	GAME_STATE = PLAY;
     if (pthread_create(&drop_piece_pt, NULL, drop_piece_pthread_routine, NULL)) {
         quit(EXIT_FAILURE, "Failed to create pthread worker");
     }
 	return;
+}
+
+void game_over() {
+	// Signal for thread to exit and wait for it.
+	GAME_STATE = GAME_OVER;
+	pthread_join(drop_piece_pt, NULL);
+	tb_print(10, 8, TB_WHITE, TB_RED, "GAME");
+	tb_print(10, 9, TB_WHITE, TB_RED, "OVER");
+	tb_print(11, 11, TB_WHITE, TB_RED, ":(");
+	tb_present();
+	
+	return;
+}
+
+// Sets the board to all black and creates a fresh active piece
+void setup_new_game() {
+	pthread_mutex_lock(&board_mutex);
+	// Initialize the board to all black
+    for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
+        for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
+            board[i][j] = TB_BLACK;
+        }
+    }
+	pthread_mutex_unlock(&board_mutex);
+
+	create_new_active_piece();
 }
 
 /* Routine for a pthread to execute. As long as this pthread is alive, it will loop
@@ -137,10 +163,11 @@ void resume_game() {
  * Set STOP_GAME_LOOP to true to signal for this routine to exit
  */ 
 void *drop_piece_pthread_routine(void *args) {
+	(void)args; // Surpress unused parameter warning
 	double remaining_wait_time_ms = drop_speed, loop_time_taken_ms = 0; // wait the full time in the first loop
     struct timespec sleep_ts;
 	clock_t start, stop;
-	while (!(STOP_GAME_LOOP || QUIT_GAME)) {
+	while (GAME_STATE == PLAY) {
         // Sleep if necessary
         if (remaining_wait_time_ms > 0) {
             sleep_ts.tv_sec = ((long) remaining_wait_time_ms) / 1000; // cast is safe to truncate since guaranteed > 0
@@ -167,33 +194,52 @@ void *drop_piece_pthread_routine(void *args) {
  * Set QUIT_GAME to true to signal for this routine to exit
  */
 void *event_handler_pthread_routine(void *args) {
+	(void)args; // Surpress unused parameter warning
 	struct tb_event event = {0};
-	while (!QUIT_GAME) {
+	while (GAME_STATE != QUIT) {
 		// Handle keyboard input
         tb_poll_event(&event);
         if (event.type == TB_EVENT_KEY) {
-			switch (event.key) {
-				case TB_KEY_CTRL_C:
-				case TB_KEY_ESC:
-					pthread_exit(NULL);
+			switch (GAME_STATE) {
+				case PLAY:
+					switch (event.key) {
+						case TB_KEY_CTRL_C:
+						case TB_KEY_ESC:
+							pthread_exit(NULL);
+							break;
+						case TB_KEY_ARROW_LEFT:
+							move_active_piece(LEFT);
+							break;
+						case TB_KEY_ARROW_RIGHT:
+							move_active_piece(RIGHT);
+							break;
+						case TB_KEY_ARROW_DOWN:
+							move_active_piece(DOWN);
+							break;
+					}
+					switch (event.ch) {
+						case 'q':
+						case 'Q':
+							game_over();
+							break;
+					}
 					break;
-				case TB_KEY_ARROW_LEFT:
-					move_active_piece(LEFT);
-					break;
-				case TB_KEY_ARROW_RIGHT:
-					move_active_piece(RIGHT);
-					break;
-				case TB_KEY_ARROW_DOWN:
-					move_active_piece(DOWN);
+
+				case GAME_OVER:
+					switch (event.key) {
+						case TB_KEY_ENTER:
+							setup_new_game();
+							render();
+							resume_game();
+							break;
+						case TB_KEY_CTRL_C:
+                        case TB_KEY_ESC:
+                            pthread_exit(NULL);
+                            break;
+					}
 					break;
 			}
-			switch (event.ch) {
-				case 'q':
-				case 'Q':
-					pthread_exit(NULL);
-					break;
-			}
-        }
+		}
 	}
 	pthread_exit(NULL);
 }
@@ -201,7 +247,49 @@ void *event_handler_pthread_routine(void *args) {
 /* draws a square(ish) block of `color` at x,y in GAME GRID COORDINATES */
 void draw_block(int x, int y, uintattr_t color) {
 	// x coordinate is doubled since each "block" is 2 chars wide
-	tb_print(2 * x, y, color, 0, "██");
+	tb_print(2 * (x+1), y+1, color, 0, "██"); // add one to account for frame
+}
+
+void show_321_countdown() {
+	// 3
+	draw_block(3,5,TB_RED); draw_block(4,5,TB_RED); draw_block(5,5,TB_RED);
+	draw_block(6,6,TB_RED); draw_block(6,7,TB_RED); draw_block(6,8,TB_RED);
+	draw_block(4,9,TB_RED); draw_block(5,9,TB_RED); draw_block(6,10,TB_RED);
+	draw_block(6,11,TB_RED); draw_block(6,12,TB_RED); draw_block(6,13,TB_RED);
+	draw_block(3,14,TB_RED); draw_block(4,14,TB_RED); draw_block(5,14,TB_RED);
+	tb_present();
+	sleep(1);
+
+	// 2
+	for (uint8_t i = 2; i < BOARD_WIDTH; i++) {
+        for (uint8_t j = 3; j < BOARD_HEIGHT; j++) {
+            draw_block(i, j, TB_BLACK);
+        }
+    }
+	draw_block(3,6,TB_YELLOW); draw_block(4,6,TB_YELLOW); draw_block(5,6,TB_YELLOW);
+	draw_block(6,7,TB_YELLOW); draw_block(6,8,TB_YELLOW); draw_block(6,9,TB_YELLOW);
+	draw_block(5,10,TB_YELLOW); draw_block(4,11,TB_YELLOW); draw_block(3,12,TB_YELLOW);
+	draw_block(3,13,TB_YELLOW); draw_block(4,13,TB_YELLOW); draw_block(5,13,TB_YELLOW);
+	draw_block(6,13,TB_YELLOW);
+	tb_present();
+	sleep(1);
+
+	// 1
+	for (uint8_t i = 2; i < BOARD_WIDTH; i++) {
+        for (uint8_t j = 3; j < BOARD_HEIGHT; j++) {
+            draw_block(i, j, TB_BLACK);
+        }
+    }
+	draw_block(5,5,TB_GREEN); draw_block(5,6,TB_GREEN); draw_block(4,6,TB_GREEN);
+	draw_block(3,7,TB_GREEN); draw_block(4,7,TB_GREEN); draw_block(5,7,TB_GREEN);
+	draw_block(4,8,TB_GREEN); draw_block(5,8,TB_GREEN); draw_block(4,9,TB_GREEN); 
+	draw_block(5,9,TB_GREEN); draw_block(4,10,TB_GREEN); draw_block(5,10,TB_GREEN);
+	draw_block(4,11,TB_GREEN); draw_block(5,11,TB_GREEN); draw_block(4,12,TB_GREEN);
+	draw_block(5,12,TB_GREEN); draw_block(4,13,TB_GREEN); draw_block(5,13,TB_GREEN);
+	draw_block(3,14,TB_GREEN); draw_block(4,14,TB_GREEN); draw_block(5,14,TB_GREEN);
+	draw_block(6,14,TB_GREEN);
+	tb_present();
+	sleep(1);
 }
 
 /* Re-renders everything on the screen
@@ -211,20 +299,20 @@ void render() {
 	tb_clear();
 	// The order in which things get rendered is important!
 	// Draw the outside frame of the board
-    for (int i = 0; i < BOARD_WIDTH + 2; i++) {
-        draw_block(i, 0, TB_WHITE); // Top row
-        draw_block(i, BOARD_HEIGHT+1, TB_WHITE); // Bottom row
+    for (int i = -1; i <= BOARD_WIDTH; i++) {
+        draw_block(i, -1, TB_WHITE); // Top row
+        draw_block(i, BOARD_HEIGHT, TB_WHITE); // Bottom row
     }
-    for (int i = 1; i <= BOARD_HEIGHT; i++) {
-        draw_block(0, i, TB_WHITE); // left
-        draw_block(BOARD_WIDTH+1, i, TB_WHITE); // right
+    for (int i = 0; i < BOARD_HEIGHT; i++) {
+        draw_block(-1, i, TB_WHITE); // left
+        draw_block(BOARD_WIDTH, i, TB_WHITE); // right
     }
 
     // Draw the board
 	pthread_mutex_lock(&board_mutex);
     for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
         for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
-            draw_block(i+1, j+1, board[i][j]); // +1 to account for frame
+            draw_block(i, j, board[i][j]);
         }
     }
 	pthread_mutex_unlock(&board_mutex);
@@ -232,7 +320,7 @@ void render() {
     // Draw active piece
 	pthread_mutex_lock(&active_piece_mutex);
     for (uint8_t i = 0; i < 4; i++) {
-        draw_block(active_piece.blocks[i].x+1, active_piece.blocks[i].y+1, active_piece.color);
+        draw_block(active_piece.blocks[i].x, active_piece.blocks[i].y, active_piece.color);
     }
 	pthread_mutex_unlock(&active_piece_mutex);
 	tb_present();
@@ -338,6 +426,7 @@ void settle_active_piece() {
 }
 
 void sigint_handler(int sig) {
+	(void)sig; // Surpress unused parameter warning
 	quit(EXIT_FAILURE, "Received SIGINT");
 }
 
@@ -346,17 +435,17 @@ void sigint_handler(int sig) {
  * Takes in an exit status and a message to print to stdout/stderr
  */
 void quit(int status, const char *exit_msg) {
-	// Destroying a locked mutex results in undefined behavior, so unlock them first
+	// Signal for pthreads to exit, then wait for them
+	GAME_STATE = QUIT;
+	pthread_join(drop_piece_pt, NULL);
+	pthread_join(event_handler_pt, NULL);
+	
+	// unlock them first, just in case
 	pthread_mutex_unlock(&board_mutex);
     pthread_mutex_destroy(&board_mutex);
 	pthread_mutex_unlock(&active_piece_mutex);
     pthread_mutex_destroy(&active_piece_mutex);
-
-	// Signal for pthreads to exit, then wait for them
-	QUIT_GAME = true;
-	pthread_join(drop_piece_pt, NULL);
-	pthread_join(event_handler_pt, NULL);
-
+	
 	tb_shutdown();
 	fprintf((status == EXIT_SUCCESS) ? stdout : stderr, "Tetris exited: %s\n", exit_msg);
 	exit(status);
