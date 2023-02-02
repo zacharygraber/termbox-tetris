@@ -5,6 +5,14 @@
  * GitHub: @zacharygraber (https://github.com/zacharygraber)         *
  * Created: 1/29/2023                                                *
  *********************************************************************/
+
+/* TODO:
+     * All pieces
+     * Rotation
+	 * Line clearing
+     * Scoring and levels
+*/
+
 #define TB_IMPL
 
 #include "termbox.h"
@@ -52,7 +60,7 @@ static double drop_speed = 1000.0; // (in ms) start by moving piece down every s
 static uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
 static piece_t active_piece = {0};
 static pthread_mutex_t board_mutex, active_piece_mutex;
-static pthread_t drop_piece_pt, event_handler_pt;
+static pthread_t event_handler_pt;
 static game_state_t GAME_STATE = PAUSE;
 //////////////////////
 
@@ -61,13 +69,13 @@ void pause_game();
 void resume_game();
 void game_over();
 void setup_new_game();
-void *drop_piece_pthread_routine(void *args);
 void *event_handler_pthread_routine(void *args);
 void render();
 void draw_block(int x, int y, uintattr_t color);
 void show_321_countdown();
 void create_new_active_piece();
-void move_active_piece(direc_t d);
+bool move_active_piece(direc_t d);
+void hard_drop_active_piece();
 void settle_active_piece();
 void sigint_handler(int sig);
 void quit(int status, const char *exit_msg);
@@ -75,8 +83,45 @@ void quit(int status, const char *exit_msg);
 int main(void) {
 	tb_init();
 	initialize();
-	pthread_join(event_handler_pt, NULL);
-	quit(EXIT_SUCCESS, "Game over.");
+	
+	double remaining_wait_time_ms = drop_speed, loop_time_taken_ms = 0;
+    struct timespec sleep_ts;
+    clock_t start, stop;
+    while (true) {
+        switch (GAME_STATE) {
+            case PLAY:
+                start = clock();
+                // Move piece down and re-render to display change (rendering handled in move)
+                move_active_piece(DOWN);
+                stop = clock();
+
+                loop_time_taken_ms = ((double) (stop - start) * 1000.0) / CLOCKS_PER_SEC;
+                remaining_wait_time_ms = drop_speed - loop_time_taken_ms;
+
+				// Sleep if necessary
+                if (remaining_wait_time_ms > 0) {
+                    sleep_ts.tv_sec = ((long) remaining_wait_time_ms) / 1000; // cast is safe to truncate since guaranteed > 0
+                    sleep_ts.tv_nsec = (long) (fmod(remaining_wait_time_ms, 1000.0) * 1000000);
+                    nanosleep(&sleep_ts, &sleep_ts);
+                }
+                break;
+
+            case GAME_OVER:
+                // Wait for input
+                break;
+
+            case PAUSE:
+                // Nothing to do except wait for input
+                break;
+
+            case QUIT:
+                quit(EXIT_SUCCESS, "Game over!");
+                break;
+        }
+    }
+	
+	// We should never hit this. Any exit should happen through quit().
+	exit(EXIT_FAILURE);
 }
 
 /* initializes the resources and threads needed to run the game
@@ -113,9 +158,7 @@ void initialize() {
 
 void pause_game() {
 	if (GAME_STATE == PAUSE) return;
-
 	GAME_STATE = PAUSE;
-	pthread_join(drop_piece_pt, NULL);
 	return;
 }
 
@@ -125,21 +168,15 @@ void resume_game() {
 	show_321_countdown();
 	render();
 	GAME_STATE = PLAY;
-    if (pthread_create(&drop_piece_pt, NULL, drop_piece_pthread_routine, NULL)) {
-        quit(EXIT_FAILURE, "Failed to create pthread worker");
-    }
 	return;
 }
 
 void game_over() {
-	// Signal for thread to exit and wait for it.
 	GAME_STATE = GAME_OVER;
-	pthread_join(drop_piece_pt, NULL);
 	tb_print(10, 8, TB_WHITE, TB_RED, "GAME");
-	tb_print(10, 9, TB_WHITE, TB_RED, "OVER");
-	tb_print(11, 11, TB_WHITE, TB_RED, ":(");
-	tb_present();
-	
+    tb_print(10, 9, TB_WHITE, TB_RED, "OVER");
+    tb_print(11, 11, TB_WHITE, TB_RED, ":(");
+    tb_present();
 	return;
 }
 
@@ -157,41 +194,11 @@ void setup_new_game() {
 	create_new_active_piece();
 }
 
-/* Routine for a pthread to execute. As long as this pthread is alive, it will loop
- * infinitely, moving the active piece down every `drop_speed` ms.
- *
- * Set STOP_GAME_LOOP to true to signal for this routine to exit
- */ 
-void *drop_piece_pthread_routine(void *args) {
-	(void)args; // Surpress unused parameter warning
-	double remaining_wait_time_ms = drop_speed, loop_time_taken_ms = 0; // wait the full time in the first loop
-    struct timespec sleep_ts;
-	clock_t start, stop;
-	while (GAME_STATE == PLAY) {
-        // Sleep if necessary
-        if (remaining_wait_time_ms > 0) {
-            sleep_ts.tv_sec = ((long) remaining_wait_time_ms) / 1000; // cast is safe to truncate since guaranteed > 0
-            sleep_ts.tv_nsec = (long) (fmod(remaining_wait_time_ms, 1000.0) * 1000000);
-            nanosleep(&sleep_ts, &sleep_ts);
-        }
-		
-		start = clock();
-		// Move piece down and re-render to display change (rendering handled in move)
-    	move_active_piece(DOWN);
-		stop = clock();
-
-		loop_time_taken_ms = ((double) (stop - start) * 1000.0) / CLOCKS_PER_SEC;
-		remaining_wait_time_ms = drop_speed - loop_time_taken_ms;
-	}
-	pthread_exit(NULL);
-}
-
 /* Routine for a pthread to execute. As long as this pthread is alive, its loop will
  * continually poll termbox for events (including keyboard input) and handle them appropriately.
- * This could be considered the main loop of the game, and is intended to stay alive as
- * long as the program does.
+ * Intended to stay alive as long as the program does.
  * 
- * Set QUIT_GAME to true to signal for this routine to exit
+ * Set GAME_STATE to QUIT to signal for this routine to exit
  */
 void *event_handler_pthread_routine(void *args) {
 	(void)args; // Surpress unused parameter warning
@@ -205,7 +212,7 @@ void *event_handler_pthread_routine(void *args) {
 					switch (event.key) {
 						case TB_KEY_CTRL_C:
 						case TB_KEY_ESC:
-							pthread_exit(NULL);
+							GAME_STATE = QUIT;
 							break;
 						case TB_KEY_ARROW_LEFT:
 							move_active_piece(LEFT);
@@ -216,11 +223,17 @@ void *event_handler_pthread_routine(void *args) {
 						case TB_KEY_ARROW_DOWN:
 							move_active_piece(DOWN);
 							break;
+						case TB_KEY_SPACE:
+							hard_drop_active_piece();
+							break;
 					}
 					switch (event.ch) {
-						case 'q':
-						case 'Q':
-							game_over();
+						case 'p':
+						case 'P':
+							pause_game();
+							break;
+						case ' ':
+							hard_drop_active_piece();
 							break;
 					}
 					break;
@@ -234,10 +247,18 @@ void *event_handler_pthread_routine(void *args) {
 							break;
 						case TB_KEY_CTRL_C:
                         case TB_KEY_ESC:
-                            pthread_exit(NULL);
+                            GAME_STATE = QUIT;
                             break;
 					}
 					break;
+
+				case PAUSE:
+					switch (event.ch) {
+                        case 'p':
+                        case 'P':
+                            resume_game();
+                            break;
+                    }
 			}
 		}
 	}
@@ -342,17 +363,28 @@ void create_new_active_piece() {
 	active_piece.blocks[3].x = 6;
 	active_piece.blocks[3].y = 0;
 
+	// Check to make sure the new piece isn't on top of any existing "settled" ones
+	// If so, it's a game over.
+	bool game_over_happens = false;
+	pthread_mutex_lock(&board_mutex);
+	for (uint8_t i = 0; i < 4; i++) {
+		if (board[active_piece.blocks[i].x][active_piece.blocks[i].y] != TB_BLACK) {
+			game_over_happens = true;
+		}
+	}
+	pthread_mutex_unlock(&board_mutex);
 	pthread_mutex_unlock(&active_piece_mutex);
-
+	
 	render();
+	if (game_over_happens) game_over();
 }
 
 /* Moves the active piece in the direction specified
  * returns true if the piece is still in play after the move
- * returns false if moving the piece would "settle" it on the board
+ * returns false if the piece "settled" on the board after the move
  */
 // THREAD SAFE
-void move_active_piece(direc_t d) {
+bool move_active_piece(direc_t d) {
 	block_t new_blocks[4];
 	int new_x=0, new_y=0;
 
@@ -369,7 +401,7 @@ void move_active_piece(direc_t d) {
                 if (new_x < 0 || board[new_x][new_y] != TB_BLACK) {
 					pthread_mutex_unlock(&board_mutex);
 					pthread_mutex_unlock(&active_piece_mutex);
-                    return; // This is a "valid" move, but the piece doesn't change positions
+                    return true; // This is a "valid" move, but the piece doesn't change positions
                 }
 				break;
 
@@ -379,7 +411,7 @@ void move_active_piece(direc_t d) {
                 if (new_x >= BOARD_WIDTH || board[new_x][new_y] != TB_BLACK) {
 					pthread_mutex_unlock(&board_mutex);
                     pthread_mutex_unlock(&active_piece_mutex);
-                    return; // This is a "valid" move, but the piece doesn't change positions
+                    return true; // This is a "valid" move, but the piece doesn't change positions
                 }
 				break;
 
@@ -390,7 +422,7 @@ void move_active_piece(direc_t d) {
 					pthread_mutex_unlock(&board_mutex);
                     pthread_mutex_unlock(&active_piece_mutex);
 					settle_active_piece(); // Render is handled by this function call
-					return; // Piece hit the bottom of the board or another "settled" piece
+					return false; // Piece hit the bottom of the board or another "settled" piece
 				}
 				break;
 		}
@@ -405,8 +437,15 @@ void move_active_piece(direc_t d) {
 	}
 	pthread_mutex_unlock(&active_piece_mutex);
 	render();
-	return;
+	return true;
 }
+
+void hard_drop_active_piece() {
+	while (move_active_piece(DOWN)) {
+		continue;
+	}
+	return;
+} 
 
 /* "Settles" the active piece by writing its current position
  * to the board and creating a new active piece
@@ -435,9 +474,8 @@ void sigint_handler(int sig) {
  * Takes in an exit status and a message to print to stdout/stderr
  */
 void quit(int status, const char *exit_msg) {
-	// Signal for pthreads to exit, then wait for them
+	// Signal for pthread to exit, then wait for it
 	GAME_STATE = QUIT;
-	pthread_join(drop_piece_pt, NULL);
 	pthread_join(event_handler_pt, NULL);
 	
 	// unlock them first, just in case
