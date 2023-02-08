@@ -127,6 +127,9 @@ int main(void) {
 /* initializes the resources and threads needed to run the game
  */
 void initialize() {
+	// Seed RNG
+	srand(time(NULL));
+	
 	// handle inadequate window dimensions
 	if ((tb_width() < MIN_WIDTH) || (tb_height() < MIN_HEIGHT)) {
 		quit(EXIT_FAILURE, "Window dimensions are too small!");
@@ -348,20 +351,52 @@ void render() {
     return;
 }
 
+const piece_t I_BLOCK_SINGLETON = { .color = TB_CYAN, .blocks = {{.x=3, .y=0},
+                                                                 {.x=4, .y=0},
+                                                                 {.x=5, .y=0},
+                                                                 {.x=6, .y=0}}};
+
+const piece_t L_BLOCK_SINGLETON = { .color = TB_YELLOW, .blocks = {{.x=4, .y=0},
+                                                                   {.x=5, .y=0},
+                                                                   {.x=3, .y=0},
+                                                                   {.x=3, .y=1}}};
+
+const piece_t J_BLOCK_SINGLETON = { .color = TB_BLUE, .blocks = {{.x=4, .y=0},
+                                                                 {.x=3, .y=0},
+                                                                 {.x=5, .y=0},
+                                                                 {.x=5, .y=1}}};
+
+const piece_t O_BLOCK_SINGLETON = { .color = TB_RED, .blocks = {{.x=4, .y=0},
+                                                                {.x=4, .y=1},
+                                                                {.x=5, .y=0},
+                                                                {.x=5, .y=1}}};
+
+const piece_t S_BLOCK_SINGLETON = { .color = TB_GREEN, .blocks = {{.x=4, .y=0},
+                                                                  {.x=5, .y=0},
+                                                                  {.x=3, .y=1},
+                                                                  {.x=4, .y=1}}};
+
+const piece_t Z_BLOCK_SINGLETON = { .color = TB_MAGENTA, .blocks = {{.x=4, .y=0},
+                                                                    {.x=3, .y=0},
+                                                                    {.x=4, .y=1},
+                                                                    {.x=5, .y=1}}};
+
+const piece_t T_BLOCK_SINGLETON = { .color = TB_WHITE, .blocks = {{.x=4, .y=0},
+                                                                  {.x=5, .y=0},
+                                                                  {.x=3, .y=0},
+                                                                  {.x=4, .y=1}}};
+
+const piece_t BLOCK_TYPE_NAMES[7] = {I_BLOCK_SINGLETON, L_BLOCK_SINGLETON, J_BLOCK_SINGLETON,
+                                O_BLOCK_SINGLETON, S_BLOCK_SINGLETON, Z_BLOCK_SINGLETON, 
+								T_BLOCK_SINGLETON};
+
 // THREAD SAFE
 void create_new_active_piece() {
 	pthread_mutex_lock(&active_piece_mutex);
 
-	// TODO: implement actual tetrominos
-	active_piece.color = TB_CYAN;
-	active_piece.blocks[0].x = 3;
-	active_piece.blocks[0].y = 0;
-	active_piece.blocks[1].x = 4;
-	active_piece.blocks[1].y = 0;
-	active_piece.blocks[2].x = 5;
-	active_piece.blocks[2].y = 0;
-	active_piece.blocks[3].x = 6;
-	active_piece.blocks[3].y = 0;
+	int i = rand() % 7; // 7 pieces, semi-rand int in set {x | 0 <= x < 7}
+	
+	active_piece = BLOCK_TYPE_NAMES[i]; // copy value, not reference, so this is fine
 
 	// Check to make sure the new piece isn't on top of any existing "settled" ones
 	// If so, it's a game over.
