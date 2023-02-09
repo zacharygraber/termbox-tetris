@@ -589,7 +589,7 @@ void settle_active_piece() {
 
 	// If there are no lines to clear, skip this block
 	if (!(lines_to_clear[0] == -1 && lines_to_clear[1] == -1 && lines_to_clear[2] == -1 && lines_to_clear[3] == -1)) {
-		const long FLASH_DELAY_MS = 100; // Always less than 1 sec (1000 ms)
+		const long FLASH_DELAY_MS = 250; // Always less than 1 sec (1000 ms)
 		struct timespec sleep_ts;
 		sleep_ts.tv_sec = 0;
         sleep_ts.tv_nsec = FLASH_DELAY_MS * 1000000;
@@ -637,6 +637,14 @@ void settle_active_piece() {
 			for (uint8_t row = lines_to_clear[i]; row > 0; row--) {
 				for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
 					board[col][row] = board[col][row - 1];
+				}
+			}
+
+			// Make sure to adjust any remaining lines to clear since this operation might have
+			// shifted them
+			for (uint8_t j = i + 1; j < 4; j++) {
+				if (lines_to_clear[j] != -1 && lines_to_clear[j] < lines_to_clear[i]) {
+					lines_to_clear[j]++;
 				}
 			}
 		}
