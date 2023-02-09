@@ -7,10 +7,10 @@
  *********************************************************************/
 
 /* TODO:
-     * All pieces
-     * Rotation
 	 * Line clearing
+	 * Show next piece
      * Scoring and levels
+	 * Handle resize events
 */
 
 #define TB_IMPL
@@ -33,8 +33,8 @@
 
 // A game piece (a tetromino) is made of 4 blocks
 typedef struct block_t {
-	uint8_t x;
-	uint8_t y;
+	int8_t x;
+	int8_t y;
 } block_t;
 
 typedef struct piece_t {
@@ -75,6 +75,7 @@ void draw_block(int x, int y, uintattr_t color);
 void show_321_countdown();
 void create_new_active_piece();
 bool move_active_piece(direc_t d);
+void rotate_active_piece();
 void hard_drop_active_piece();
 void settle_active_piece();
 void sigint_handler(int sig);
@@ -226,6 +227,9 @@ void *event_handler_pthread_routine(void *args) {
 						case TB_KEY_ARROW_DOWN:
 							move_active_piece(DOWN);
 							break;
+						case TB_KEY_ARROW_UP:
+							rotate_active_piece();
+							break;
 						case TB_KEY_SPACE:
 							hard_drop_active_piece();
 							break;
@@ -344,15 +348,16 @@ void render() {
     // Draw active piece
 	pthread_mutex_lock(&active_piece_mutex);
     for (uint8_t i = 0; i < 4; i++) {
-        draw_block(active_piece.blocks[i].x, active_piece.blocks[i].y, active_piece.color);
+		if (active_piece.blocks[i].y >= 0) // Don't draw blocks that are above the board (negative y)
+        	draw_block(active_piece.blocks[i].x, active_piece.blocks[i].y, active_piece.color);
     }
 	pthread_mutex_unlock(&active_piece_mutex);
 	tb_present();
     return;
 }
 
-const piece_t I_BLOCK_SINGLETON = { .color = TB_CYAN, .blocks = {{.x=3, .y=0},
-                                                                 {.x=4, .y=0},
+const piece_t I_BLOCK_SINGLETON = { .color = TB_CYAN, .blocks = {{.x=4, .y=0},
+                                                                 {.x=3, .y=0},
                                                                  {.x=5, .y=0},
                                                                  {.x=6, .y=0}}};
 
@@ -421,7 +426,7 @@ void create_new_active_piece() {
 // THREAD SAFE
 bool move_active_piece(direc_t d) {
 	block_t new_blocks[4];
-	int new_x=0, new_y=0;
+	int8_t new_x=0, new_y=0;
 
 	pthread_mutex_lock(&active_piece_mutex);
 	pthread_mutex_lock(&board_mutex); // not writing to board, but want to make sure it doesn't change
@@ -433,7 +438,7 @@ bool move_active_piece(direc_t d) {
                 new_y = active_piece.blocks[i].y; // y doesn't change
 
                 // Make sure moving left wouldn't put us through the left wall or in an already occupied space
-                if (new_x < 0 || board[new_x][new_y] != TB_BLACK) {
+                if (new_x < 0 || (new_y >= 0 && board[new_x][new_y] != TB_BLACK)) {
 					pthread_mutex_unlock(&board_mutex);
 					pthread_mutex_unlock(&active_piece_mutex);
                     return true; // This is a "valid" move, but the piece doesn't change positions
@@ -443,7 +448,7 @@ bool move_active_piece(direc_t d) {
 			case RIGHT:
 				new_x = active_piece.blocks[i].x + 1;
                 new_y = active_piece.blocks[i].y; // y doesn't change
-                if (new_x >= BOARD_WIDTH || board[new_x][new_y] != TB_BLACK) {
+                if (new_x >= BOARD_WIDTH || (new_y >= 0 && board[new_x][new_y] != TB_BLACK)) {
 					pthread_mutex_unlock(&board_mutex);
                     pthread_mutex_unlock(&active_piece_mutex);
                     return true; // This is a "valid" move, but the piece doesn't change positions
@@ -453,7 +458,7 @@ bool move_active_piece(direc_t d) {
 			case DOWN:
 				new_x = active_piece.blocks[i].x; // x doesn't change
                 new_y = active_piece.blocks[i].y + 1;
-				if (new_y >= BOARD_HEIGHT || board[new_x][new_y] != TB_BLACK) {
+				if (new_y >= BOARD_HEIGHT || (new_y >= 0 && board[new_x][new_y] != TB_BLACK)) {
 					pthread_mutex_unlock(&board_mutex);
                     pthread_mutex_unlock(&active_piece_mutex);
 					settle_active_piece(); // Render is handled by this function call
@@ -475,6 +480,74 @@ bool move_active_piece(direc_t d) {
 	return true;
 }
 
+void rotate_active_piece() {
+	block_t new_blocks[3]; // First block (center) always stays fixed
+
+	pthread_mutex_lock(&active_piece_mutex);
+
+	// We can determine piece type by color
+	// I-Block (line piece) and O-Block (Square) have special rotations,
+	// But all others rotate clockwise around their center (defined as the first block index)
+	block_t center = active_piece.blocks[0];
+	int8_t rel_x, rel_y;
+	switch (active_piece.color) {
+		case TB_CYAN:
+			// Follows rotation for I-Block seen on freetetris.org
+			if (center.y == active_piece.blocks[1].y) {
+				// Line piece is horizontal. Make it vertical.
+				new_blocks[0].x = center.x; new_blocks[0].y = center.y-1; 
+                new_blocks[1].x = center.x; new_blocks[1].y = center.y+1;
+				new_blocks[2].x = center.x; new_blocks[2].y = center.y+2;
+			}
+			else {
+				// Line is vertical. Make it horizontal
+				new_blocks[0].x = center.x-1; new_blocks[0].y = center.y;
+                new_blocks[1].x = center.x+1; new_blocks[1].y = center.y;
+                new_blocks[2].x = center.x+2; new_blocks[2].y = center.y;
+			}
+			break;
+
+		case TB_RED:
+			// O-Block has no rotations. Skip.
+			pthread_mutex_unlock(&active_piece_mutex);
+			return;
+			break;
+
+		default:
+			// For the non-center blocks, rotate around center clockwise
+			// Follows 2D rotation for Theta=-90 degrees
+			for (uint8_t i = 1; i < 4; i++) {
+				rel_x = active_piece.blocks[i].x - center.x;
+				rel_y = active_piece.blocks[i].y - center.y;
+				new_blocks[i-1].x = center.x - rel_y;
+				new_blocks[i-1].y = center.y + rel_x;
+			}
+			break;
+	}
+
+	// Make sure new rotation doesn't end up inside another settled piece or outside the board
+	// rotations that end up above the board are fine.
+	pthread_mutex_lock(&board_mutex);
+	for (uint8_t i = 0; i < 3; i++) {
+        if ((new_blocks[i].y >= 0 && board[new_blocks[i].x][new_blocks[i].y] != TB_BLACK) 
+             || (new_blocks[i].y >= BOARD_HEIGHT) 
+             || (new_blocks[i].x < 0)
+             || (new_blocks[i].x >= BOARD_WIDTH)) {
+			pthread_mutex_unlock(&board_mutex);
+			pthread_mutex_unlock(&active_piece_mutex);
+            return;
+		}
+    }
+	pthread_mutex_unlock(&board_mutex);
+
+	// All guard clauses passed: move to new positions
+    for (uint8_t i = 0; i < 3; i++) {
+        active_piece.blocks[i+1] = new_blocks[i]; // Skip first block (center)
+    }
+    pthread_mutex_unlock(&active_piece_mutex);
+    render();
+}
+
 void hard_drop_active_piece() {
 	while (move_active_piece(DOWN)) {
 		continue;
@@ -483,15 +556,92 @@ void hard_drop_active_piece() {
 } 
 
 /* "Settles" the active piece by writing its current position
- * to the board and creating a new active piece
+ * to the board and creating a new active piece,
+ * clearing lines if necessary
  */
 // THREAD SAFE
 void settle_active_piece() {
 	pthread_mutex_lock(&active_piece_mutex);
     pthread_mutex_lock(&board_mutex);
+	int8_t lines_to_clear[4] = {-1, -1, -1, -1}; // Array of y-values to clear. -1 indicates no line.
 	for (uint8_t i = 0; i < 4; i++) {
+		if (active_piece.blocks[i].y < 0) {
+			// Game over
+			pthread_mutex_unlock(&active_piece_mutex);
+    		pthread_mutex_unlock(&board_mutex);	
+			render();
+			game_over();
+			return;	
+		}
 		board[active_piece.blocks[i].x][active_piece.blocks[i].y] = active_piece.color;
+
+		// Check to see if the row/line is now full
+		for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
+			// If the board is black, there is no piece (line is not full)
+			if (board[col][active_piece.blocks[i].y] == TB_BLACK) break;
+			
+			// If the last block isn't black and we're still going, clear the line
+			else if (col == BOARD_WIDTH - 1) {
+				lines_to_clear[i] = active_piece.blocks[i].y;
+			}
+		}
 	}
+
+	// If there are no lines to clear, skip this block
+	if (!(lines_to_clear[0] == -1 && lines_to_clear[1] == -1 && lines_to_clear[2] == -1 && lines_to_clear[3] == -1)) {
+		const long FLASH_DELAY_MS = 100; // Always less than 1 sec (1000 ms)
+		struct timespec sleep_ts;
+		sleep_ts.tv_sec = 0;
+        sleep_ts.tv_nsec = FLASH_DELAY_MS * 1000000;
+
+		// Color the lines all white
+		for (uint8_t i = 0; i < 4; i++) {
+			if (lines_to_clear[i] == -1) continue;
+
+			for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
+				draw_block(col, lines_to_clear[i], TB_WHITE);
+			}
+		}
+		tb_present();
+
+		nanosleep(&sleep_ts, &sleep_ts);
+
+		// Color the lines their board color
+        for (uint8_t i = 0; i < 4; i++) {
+            if (lines_to_clear[i] == -1) continue;
+
+            for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
+                draw_block(col, lines_to_clear[i], board[col][lines_to_clear[i]]);
+            }
+        }
+		tb_present();
+
+		nanosleep(&sleep_ts, &sleep_ts);
+
+		// Color the lines all white
+        for (uint8_t i = 0; i < 4; i++) {
+            if (lines_to_clear[i] == -1) continue;
+
+            for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
+                draw_block(col, lines_to_clear[i], TB_WHITE);
+            }
+        }
+        tb_present();
+
+		nanosleep(&sleep_ts, &sleep_ts);
+
+		// actually remove each line from the board and move everything above down by one
+		for (uint8_t i = 0; i < 4; i++) {
+			if (lines_to_clear[i] == -1) continue;
+
+			for (uint8_t row = lines_to_clear[i]; row > 0; row--) {
+				for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
+					board[row][col] = board[row-1][col];
+				}
+			}
+		}
+	}
+
 	pthread_mutex_unlock(&active_piece_mutex);
     pthread_mutex_unlock(&board_mutex);
 	
