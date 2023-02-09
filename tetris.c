@@ -636,7 +636,7 @@ void settle_active_piece() {
 
 			for (uint8_t row = lines_to_clear[i]; row > 0; row--) {
 				for (uint8_t col = 0; col < BOARD_WIDTH; col++) {
-					board[row][col] = board[row-1][col];
+					board[col][row] = board[col][row - 1];
 				}
 			}
 		}
