@@ -6,13 +6,6 @@
  * Created: 1/29/2023                                                *
  *********************************************************************/
 
-/* TODO:
-	 * Line clearing
-	 * Show next piece
-     * Scoring and levels
-	 * Handle resize events
-*/
-
 #define TB_IMPL
 
 #include "termbox.h"
@@ -275,7 +268,7 @@ void *event_handler_pthread_routine(void *args) {
 /* draws a square(ish) block of `color` at x,y in GAME GRID COORDINATES */
 void draw_block(int x, int y, uintattr_t color) {
 	// x coordinate is doubled since each "block" is 2 chars wide
-	tb_print(2 * (x+1), y+1, color, 0, "██"); // add one to account for frame
+	tb_print(2 * (x+1), y+1, color, TB_BLACK, "██"); // add one to account for frame
 }
 
 void show_321_countdown() {
