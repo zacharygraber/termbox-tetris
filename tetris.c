@@ -317,6 +317,8 @@ void show_321_countdown() {
  */
 // SHOULD BE [MOSTLY] THREAD SAFE
 void render() {
+	pthread_mutex_lock(&board_mutex);
+	pthread_mutex_lock(&active_piece_mutex);
 	tb_clear();
 	// The order in which things get rendered is important!
 	// Draw the outside frame of the board
@@ -330,22 +332,20 @@ void render() {
     }
 
     // Draw the board
-	pthread_mutex_lock(&board_mutex);
     for (uint8_t i = 0; i < BOARD_WIDTH; i++) {
         for (uint8_t j = 0; j < BOARD_HEIGHT; j++) {
             draw_block(i, j, board[i][j]);
         }
     }
-	pthread_mutex_unlock(&board_mutex);
 
     // Draw active piece
-	pthread_mutex_lock(&active_piece_mutex);
     for (uint8_t i = 0; i < 4; i++) {
 		if (active_piece.blocks[i].y >= 0) // Don't draw blocks that are above the board (negative y)
         	draw_block(active_piece.blocks[i].x, active_piece.blocks[i].y, active_piece.color);
     }
-	pthread_mutex_unlock(&active_piece_mutex);
 	tb_present();
+	pthread_mutex_unlock(&active_piece_mutex);
+	pthread_mutex_unlock(&board_mutex);
     return;
 }
 
