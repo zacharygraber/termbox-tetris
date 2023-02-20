@@ -6,73 +6,16 @@
  * Created: 1/29/2023                                                *
  *********************************************************************/
 
-#define TB_IMPL
-
-#include "termbox.h"
-#include <stdlib.h>
-#include <stdio.h>
-#include <time.h>
-#include <unistd.h>
-#include <signal.h>
-#include <math.h>
-#include <stdbool.h>
-#include <pthread.h>
-
-// Widths are effectively doubled, since a single "cell" is too skinny to be square
-#define BOARD_WIDTH 10 // MAX OF 255 
-#define BOARD_HEIGHT 20 // MAX OF 255
-#define MIN_WIDTH (BOARD_WIDTH + 2)*2
-#define MIN_HEIGHT (BOARD_HEIGHT + 2)
-
-// A game piece (a tetromino) is made of 4 blocks
-typedef struct block_t {
-	int8_t x;
-	int8_t y;
-} block_t;
-
-typedef struct piece_t {
-	block_t blocks[4];
-	uintattr_t color;
-} piece_t;
-
-typedef enum direc_t {
-	LEFT,
-	RIGHT,
-	DOWN // pieces can never move up
-} direc_t;
-
-typedef enum game_state_t {
-	PLAY,
-	PAUSE,
-	GAME_OVER,
-	QUIT
-} game_state_t;
+#include "include/tetris.h"
 
 // Globals ///////////
-static double drop_speed = 1000.0; // (in ms) start by moving piece down every second
-static uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
-static piece_t active_piece = {0};
-static pthread_mutex_t board_mutex, active_piece_mutex;
-static pthread_t event_handler_pt;
-static game_state_t GAME_STATE = PAUSE;
+double drop_speed = 1000.0; // (in ms) start by moving piece down every second
+volatile uintattr_t board[BOARD_WIDTH][BOARD_HEIGHT]; // board is 2D grid of colors (the active piece is NOT part of the board)
+volatile piece_t active_piece = {0};
+pthread_mutex_t board_mutex, active_piece_mutex;
+pthread_t event_handler_pt;
+game_state_t GAME_STATE = PAUSE;
 //////////////////////
-
-void initialize();
-void pause_game();
-void resume_game();
-void game_over();
-void setup_new_game();
-void *event_handler_pthread_routine(void *args);
-void render();
-void draw_block(int x, int y, uintattr_t color);
-void show_321_countdown();
-void create_new_active_piece();
-bool move_active_piece(direc_t d);
-void rotate_active_piece();
-void hard_drop_active_piece();
-void settle_active_piece();
-void sigint_handler(int sig);
-void quit(int status, const char *exit_msg);
 
 int main(void) {
 	tb_init();
@@ -118,31 +61,25 @@ int main(void) {
 	exit(EXIT_FAILURE);
 }
 
-/* initializes the resources and threads needed to run the game
- */
+// Initializes the resources and thread(s) needed to run the game
 void initialize() {
 	// Seed RNG
 	srand(time(NULL));
 	
 	// handle inadequate window dimensions
-	if ((tb_width() < MIN_WIDTH) || (tb_height() < MIN_HEIGHT)) {
+	if ((tb_width() < MIN_WIDTH) || (tb_height() < MIN_HEIGHT))
 		quit(EXIT_FAILURE, "Window dimensions are too small!");
-	}
 
 	// Register sigint handler to gracefully shut down
 	signal(SIGINT, sigint_handler);
 
-
 	// Create mutexes for board and active piece
-	if (pthread_mutex_init(&board_mutex, NULL) || pthread_mutex_init(&active_piece_mutex, NULL)) {
+	if (pthread_mutex_init(&board_mutex, NULL) || pthread_mutex_init(&active_piece_mutex, NULL))
 		quit(EXIT_FAILURE, "Couldn't initialize mutex");
-	}
-
 
 	// Spawn pthread for main event handler
-	if (pthread_create(&event_handler_pt, NULL, event_handler_pthread_routine, NULL)) {
+	if (pthread_create(&event_handler_pt, NULL, event_handler_pthread_routine, NULL))
 		quit(EXIT_FAILURE, "Failed to create pthread for main loop");
-	}
 
 	setup_new_game();
 
@@ -150,30 +87,6 @@ void initialize() {
 	render();
 
 	resume_game();
-	return;
-}
-
-void pause_game() {
-	if (GAME_STATE == PAUSE) return;
-	GAME_STATE = PAUSE;
-	return;
-}
-
-void resume_game() {
-	if (GAME_STATE == PLAY) return;
-
-	show_321_countdown();
-	render();
-	GAME_STATE = PLAY;
-	return;
-}
-
-void game_over() {
-	GAME_STATE = GAME_OVER;
-	tb_print(10, 8, TB_WHITE, TB_RED, "GAME");
-    tb_print(10, 9, TB_WHITE, TB_RED, "OVER");
-    tb_print(11, 11, TB_WHITE, TB_RED, ":(");
-    tb_present();
 	return;
 }
 
@@ -201,8 +114,9 @@ void *event_handler_pthread_routine(void *args) {
 	(void)args; // Surpress unused parameter warning
 	struct tb_event event = {0};
 	while (GAME_STATE != QUIT) {
-		// Handle keyboard input
-        tb_poll_event(&event);
+		tb_poll_event(&event);
+
+		// Handle keyboard
         if (event.type == TB_EVENT_KEY) {
 			switch (GAME_STATE) {
 				case PLAY:
